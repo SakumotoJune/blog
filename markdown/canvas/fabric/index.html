@@ -2,7 +2,76 @@
 <html>
 
 <head></head>
+<script src="./js/fabric.min.js"></script>
 
-<body></body>
+<body>
+  <canvas width="400" height="200" id="canvas"></canvas>
+  <script>
+    fabric.CurvedText = fabric.util.createClass(fabric.Text, {
+      type: 'curved-text',
+      diameter: 250,
+      kerning: 0,
+      text: '',
+      flipped: false,
+      fill: '#000',
+      fontFamily: 'Times New Roman',
+      fontSize: 24, // in px
+      fontWeight: 'normal',
+      fontStyle: '', // "normal", "italic" or "oblique".
+      cacheProperties: fabric.Object.prototype.cacheProperties.concat('diameter', 'kerning', 'flipped', 'fill', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'strokeStyle', 'strokeWidth'),
+      strokeStyle: null,
+      strokeWidth: 0,
+      initialize: function (text, options) {
+        options || (options = {});
+        this.text = text;
+        this.callSuper('initialize', options);
+        this.set('lockUniScaling', true);
+        var canvas = this.getCircularText();
+        this._trimCanvas(canvas);
+        this.set('width', canvas.width);
+        this.set('height', canvas.height);
+      },
+      getCircularText: function () {
+        var text = this.text,
+
+      },
+      _getFontDeclaration: function () {
+
+      }
+
+    });
+    fabric.labeledRect = fabric.util.createClass(fabric.Rect, {
+      type: 'labeledRect',
+      initialize: function (options) {
+        options || (options = {})
+        this.callSuper('initialize', options);
+        this.set('label', options.label || '');
+      },
+      toObject: function () {
+        return fabric.util.object.extend(this.callSuper('toObject', {
+          label: this.get('label')
+        }))
+      },
+      _render: function (ctx) {
+        this.callSuper('_render', ctx);
+        ctx.font = '20px Helvetica';
+        ctx.fillStyle = '#333';
+        ctx.fillText(this.label, -this.width / 2, -this.height / 2 + 20);
+      }
+    })
+  </script>
+  <script>
+    const canvas = new fabric.Canvas('canvas')
+    var labeledRect = new fabric.labeledRect({
+      width: 100,
+      height: 50,
+      left: 100,
+      top: 100,
+      label: 'test',
+      fill: '#faa'
+    });
+    canvas.add(labeledRect).renderAll();
+  </script>
+</body>
 
 </html>
