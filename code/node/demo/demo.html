@@ -1,0 +1,744 @@
+<canvas id="canvas" onmouseup="stop()" onmousedown="start(event)" onmousemove="update(event)"></canvas>
+
+<script>
+  canvas = document.getElementById("canvas");
+  var Module = { canvas };
+</script>
+
+<script src="main.js"></script>
+
+<script>
+  const image = new Image()
+  image.src = '2.png'
+  image.onload = async () => {
+    const ofcanvas = new OffscreenCanvas(image.width, image.height);
+    const ctx = ofcanvas.getContext('2d')
+    ctx.drawImage(image, 0, 0);
+    imageData = ctx.getImageData(0, 0, image.width, image.height)
+  }
+
+  function getWASMHeap(info, data) {
+    if (info.binaryInfo && info.binaryInfo.len != data.byteLength) { //release last
+      if (window.Module._free) {
+        window.Module._free(info.binaryInfo.ptr);
+      }
+      info.binary = null;
+      info.binaryInfo = null;
+    }
+
+    if (!info.binaryInfo) {
+      const ptr = window.Module._malloc(data.byteLength);
+      info.binaryInfo = {
+        ptr: ptr,
+        // binary: binary,
+        len: data.byteLength
+      };
+    }
+    const { ptr } = info.binaryInfo;
+    const binary = new Uint8Array(window.Module.HEAPU8.buffer, ptr, data.byteLength);
+    binary.set(new Uint8Array(data.buffer));
+    info.binaryInfo.binary = binary;
+    return info.binaryInfo.binary.byteOffset;
+  }
+
+  function writeMemory(data, width, height, settingInfo, target) {
+    let effect = 0;
+    if (target) {
+      const track = nativeTimelineGetTrackAt(target.trackIndex) || 0;
+      const clip = nativeTimelineGetClipAt(track, target.clipIndex) || 0;
+      effect = nativeTimelineGetEffectAt(clip, target.effectIndex) || 0;
+    }
+    const { paramSettingInfo } = settingInfo;
+
+    paramSettingInfo.forEach((it) => {
+      if (it.objName) {
+        effect = nativeTimelineFindObjectByName(it.objName) || 0;
+        console.log('****', effect);
+      }
+      switch (it.paramType) {
+        case "binary":
+          nativeTimelineUpdateBinaryParam(
+            effect,
+            it.filterIndex + ":" + it.paramName,
+            getWASMHeap(settingInfo, data),
+            width,
+            height
+          );
+          // settingInfo["binary"] = null;
+          break;
+        case "randomNum":
+          const r = Math.floor(Math.random() * 99999);
+          nativeTimelineUpdateParam(
+            effect,
+            JSON.stringify({
+              ofParam: { [`${it.filterIndex + ":" + it.paramName}`]: r },
+            })
+          );
+          break;
+      }
+    });
+  }
+
+  function loadEffect(url) {
+    let request = new XMLHttpRequest();
+    request.responseType = "arraybuffer";
+    request.onreadystatechange = function () {
+      if (this.readyState == 4) {
+        if (this.status == 200) {
+          let arrayBuffer = this.response;
+          let arr = new Uint8Array(arrayBuffer);
+          FS.writeFile("/data/cloth.zip", arr);
+          nativeUnzip("/data/cloth.zip", "/data/cloth");
+          FS.syncfs(function (err) {
+            console.log("syncfs success ? " + (!err ? "YES" : "NO"));
+            nativeTimelineLoadConfig("/data/cloth/timeline.sky", "/data/cloth");
+            play();
+          });
+        }
+      }
+    };
+    request.open("GET", url, true);
+    request.send(null);
+  }
+
+  function updateParam(key, value) {
+    let track = nativeTimelineGetTrackAt(1);
+    console.log("track = " + track);
+    let clip = nativeTimelineGetClipAt(track, 0);
+    console.log("clip = " + clip);
+    let effect = nativeTimelineGetEffectAt(clip, 0);
+    console.log("effect = " + effect);
+    nativeTimelineUpdateParam(
+      effect,
+      JSON.stringify({ ofParam: { [key]: value } })
+    );
+  }
+
+  let isDrag = false;
+  function start(event) {
+    console.log("mousedown", event);
+    startCoords = {
+      x: event.clientX,
+      y: event.clientY,
+    };
+    isDrag = true;
+  }
+
+  function stop() {
+    console.log("mouseup");
+    isDrag = false;
+  }
+
+  function update(event) {
+    if (isDrag) {
+      console.log("mousedown");
+      var offsetX = startCoords.x - event.clientX;
+      var offsetY = startCoords.y - event.clientY;
+      console.log("move x:", offsetX);
+      console.log("move y:", offsetY);
+      updateParam("0:ModelRotY", -offsetX);
+      updateParam("0:ModelRotX", offsetY);
+    }
+  }
+
+  Module.onRuntimeInitialized = () => {
+    console.log('******')
+    FS.mkdir("/data");
+    FS.mount(IDBFS, {}, "/data");
+    FS.syncfs(true, function (err) {
+      if (err) console.log("Failed to load IDBFS: " + err);
+    });
+    nativeTimelineLoadConfig = Module.cwrap("nativeTimelineLoadConfig", null, [
+      "string",
+      "string",
+    ]);
+    nativeTimelineUpdateParam = Module.cwrap(
+      "nativeTimelineUpdateParam",
+      null,
+      ["number", "string"]
+    );
+    nativeTimelineGetTrackAt = Module.cwrap(
+      "nativeTimelineGetTrackAt",
+      "number",
+      ["number"]
+    );
+    nativeTimelineGetClipAt = Module.cwrap(
+      "nativeTimelineGetClipAt",
+      "number",
+      ["number", "number"]
+    );
+    nativeTimelineGetEffectAt = Module.cwrap(
+      "nativeTimelineGetEffectAt",
+      "number",
+      ["number", "number"]
+    );
+    nativeTimelineUpdateBinaryParam = Module.cwrap(
+      "nativeTimelineUpdateBinaryParam",
+      null,
+      ["number", "string", "number", "number", "number"]
+    ),
+      nativeSetLogCallback = Module.cwrap("nativeSetLogCallback", null, ["number"]),
+      nativeUnzip = Module.cwrap("nativeUnzip", null, ["string", "string"]);
+    init = Module.cwrap("nativeInit", null, ["number", "number"]);
+    play = Module.cwrap("nativePlay", null, null);
+    const logPtr = Module.addFunction((level, msg, length) => {
+      const content = Module.UTF8ToString(msg, length);
+
+      // 生产环境下会搜集log信息并上报
+      // DO NOT REMOVE
+      console.log("[Log]", content);
+    }, 'viii');
+    nativeSetLogCallback(logPtr);
+    init(300, 300);
+    loadEffect("63V00_high_text-1024.zip");
+
+    setTimeout(() => {
+      console.log('imageData', imageData.data);
+      writeMemory(
+        imageData.data, imageData.width, imageData.height, settingInfo[1]
+      )
+    }, 5000);
+  };
+</script>
+
+<script>
+  const settingInfo = [
+    {
+      defValue: "S",
+      id: 1,
+      paramSettingInfo: [
+        {
+          name: "S",
+        },
+        {
+          name: "M",
+        },
+        {
+          name: "L",
+        },
+        {
+          name: "XL",
+        },
+        {
+          name: "2XL",
+        },
+        {
+          name: "3XL",
+        },
+      ],
+      title: "尺码",
+      type: "sizeChoose",
+    },
+    {
+      alpha: "/effects/effects2/tu/qian_alpha.png",
+      alphaUrl: "https://biu-hk.dwstatic.com/sky/20211110/7TiA6XPptGjVJNyw.png",
+      background: "/effects/effects2/tu/qian_background@3x.png",
+      backgroundMask: "/effects/effects2/tu/qian_background_mask@3x.png",
+      backgroundMaskUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/Yqovidx8rwo3FBCX.png",
+      backgroundScale: 3,
+      backgroundUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/kQyOQHGrV35gQmzq.png",
+      h: 4096,
+      icon: "/effects/effects2/tu/front-default.png",
+      iconHighlight: "/effects/effects2/tu/front-checked.png",
+      iconHighlightUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/UuG758aP5gcw6aVX.png",
+      iconUrl: "https://biu-hk.dwstatic.com/sky/20211110/VJlAC8vW3S1EePNz.png",
+      id: 2,
+      mask: "/effects/effects2/tu/qian_mask.png",
+      paramSettingInfo: [
+        {
+          filterIndex: 0,
+          paramName: "2_binary",
+          paramType: "binary",
+        },
+        {
+          filterIndex: 0,
+          paramName: "updateMaterialToken",
+          paramType: "randomNum",
+        },
+      ],
+      path: "/effects/effects2/qian_uv.png",
+      pathUrl: "https://biu-hk.dwstatic.com/sky/20211110/Ff1Ru6cYGUpLuhS8.png",
+      sizeSetting: [
+        {
+          alpha: "/effects/effects2/tu/qian_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/7TiA6XPptGjVJNyw.png",
+          height: "45",
+          mask: "/effects/effects2/tu/qian_mask.png",
+          name: "S",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/qian_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/7TiA6XPptGjVJNyw.png",
+          height: "45",
+          mask: "/effects/effects2/tu/qian_mask.png",
+          name: "M",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/qian_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/7TiA6XPptGjVJNyw.png",
+          height: "45",
+          mask: "/effects/effects2/tu/qian_mask.png",
+          name: "L",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/qian_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/7TiA6XPptGjVJNyw.png",
+          height: "45",
+          mask: "/effects/effects2/tu/qian_mask.png",
+          name: "XL",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/qian_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/7TiA6XPptGjVJNyw.png",
+          height: "45",
+          mask: "/effects/effects2/tu/qian_mask.png",
+          name: "2XL",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/qian_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/7TiA6XPptGjVJNyw.png",
+          height: "45",
+          mask: "/effects/effects2/tu/qian_mask.png",
+          name: "3XL",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/qian_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/7TiA6XPptGjVJNyw.png",
+          height: "45",
+          mask: "/effects/effects2/tu/qian_mask.png",
+          name: "4XL",
+          width: "35",
+        },
+      ],
+      title: "Front side",
+      type: "image",
+      updateParam: {
+        filterIndex: 0,
+        paramKey: "ModelRotY",
+        value: "0",
+      },
+      w: 4096,
+    },
+    {
+      alpha: "/effects/effects2/tu/hou_alpha.png",
+      alphaUrl: "https://biu-hk.dwstatic.com/sky/20211110/QuwhcvcaTL5sOUwz.png",
+      background: "/effects/effects2/tu/hou_background@3x.png",
+      backgroundMask: "/effects/effects2/tu/hou_background_mask@3x.png",
+      backgroundMaskUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/b3QWWwdJ7db2KqNP.png",
+      backgroundScale: 3,
+      backgroundUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/RQ3ApVKu8COBGwuT.png",
+      h: 4096,
+      icon: "/effects/effects2/tu/back-default.png",
+      iconHighlight: "/effects/effects2/tu/back-checked.png",
+      iconHighlightUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/LRLQfQ8MpqngjhRp.png",
+      iconUrl: "https://biu-hk.dwstatic.com/sky/20211110/yMS0wwOV8vVztrTW.png",
+      id: 3,
+      mask: "/effects/effects2/tu/hou_mask.png",
+      paramSettingInfo: [
+        {
+          filterIndex: 0,
+          paramName: "3_binary",
+          paramType: "binary",
+        },
+        {
+          filterIndex: 0,
+          paramName: "updateMaterialToken",
+          paramType: "randomNum",
+        },
+      ],
+      path: "/effects/effects2/hou_uv.png",
+      pathUrl: "https://biu-hk.dwstatic.com/sky/20211110/SrNceDqyDwG2HjM3.png",
+      sizeSetting: [
+        {
+          alpha: "/effects/effects2/tu/hou_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/QuwhcvcaTL5sOUwz.png",
+          height: "45",
+          mask: "/effects/effects2/tu/hou_mask.png",
+          name: "S",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/hou_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/QuwhcvcaTL5sOUwz.png",
+          height: "45",
+          mask: "/effects/effects2/tu/hou_mask.png",
+          name: "M",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/hou_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/QuwhcvcaTL5sOUwz.png",
+          height: "45",
+          mask: "/effects/effects2/tu/hou_mask.png",
+          name: "L",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/hou_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/QuwhcvcaTL5sOUwz.png",
+          height: "45",
+          mask: "/effects/effects2/tu/hou_mask.png",
+          name: "XL",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/hou_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/QuwhcvcaTL5sOUwz.png",
+          height: "45",
+          mask: "/effects/effects2/tu/hou_mask.png",
+          name: "2XL",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/hou_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/QuwhcvcaTL5sOUwz.png",
+          height: "45",
+          mask: "/effects/effects2/tu/hou_mask.png",
+          name: "3XL",
+          width: "35",
+        },
+        {
+          alpha: "/effects/effects2/tu/hou_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/QuwhcvcaTL5sOUwz.png",
+          height: "45",
+          mask: "/effects/effects2/tu/hou_mask.png",
+          name: "4XL",
+          width: "35",
+        },
+      ],
+      title: "Back side",
+      type: "image",
+      updateParam: {
+        filterIndex: 0,
+        paramKey: "ModelRotY",
+        value: "180",
+      },
+      w: 4096,
+    },
+    {
+      alpha: "/effects/effects2/tu/xiu2_alpha.png",
+      alphaUrl: "https://biu-hk.dwstatic.com/sky/20211110/wnBQLdWo7aXkcRXY.png",
+      background: "/effects/effects2/tu/xiu2_background@5x.png",
+      backgroundMask: "/effects/effects2/tu/xiu2_background_mask@5x.png",
+      backgroundMaskUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/6FoLwRzx562kWgSf.png",
+      backgroundScale: 5,
+      backgroundUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/9SyDZjYiVjuYLW4L.png",
+      h: 4096,
+      icon: "/effects/effects2/tu/right-default.png",
+      iconHighlight: "/effects/effects2/tu/right-checked.png",
+      iconHighlightUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/hugJiavfmkXS0dPa.png",
+      iconUrl: "https://biu-hk.dwstatic.com/sky/20211110/QTjkeED368aIKh1k.png",
+      id: 4,
+      mask: "/effects/effects2/tu/xiu2_mask.png",
+      paramSettingInfo: [
+        {
+          filterIndex: 0,
+          paramName: "5_binary",
+          paramType: "binary",
+        },
+        {
+          filterIndex: 0,
+          paramName: "updateMaterialToken",
+          paramType: "randomNum",
+        },
+      ],
+      path: "/effects/effects2/xiu2_uv.png",
+      pathUrl: "https://biu-hk.dwstatic.com/sky/20211110/oYPMu2uQmaiqRT1Y.png",
+      sizeSetting: [
+        {
+          alpha: "/effects/effects2/tu/xiu2_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/wnBQLdWo7aXkcRXY.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu2_mask.png",
+          name: "S",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu2_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/wnBQLdWo7aXkcRXY.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu2_mask.png",
+          name: "M",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu2_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/wnBQLdWo7aXkcRXY.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu2_mask.png",
+          name: "L",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu2_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/wnBQLdWo7aXkcRXY.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu2_mask.png",
+          name: "XL",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu2_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/wnBQLdWo7aXkcRXY.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu2_mask.png",
+          name: "2XL",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu2_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/wnBQLdWo7aXkcRXY.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu2_mask.png",
+          name: "3XL",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu2_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/wnBQLdWo7aXkcRXY.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu2_mask.png",
+          name: "4XL",
+          width: "12",
+        },
+      ],
+      title: "Left sleeve",
+      type: "image",
+      updateParam: {
+        filterIndex: 0,
+        paramKey: "ModelRotY",
+        value: "-90",
+      },
+      w: 4096,
+    },
+    {
+      alpha: "/effects/effects2/tu/xiu1_alpha.png",
+      alphaUrl: "https://biu-hk.dwstatic.com/sky/20211110/zL4YqVPKbqlPT5Fv.png",
+      background: "/effects/effects2/tu/xiu1_background@5x.png",
+      backgroundMask: "/effects/effects2/tu/xiu1_background_mask@5x.png",
+      backgroundMaskUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/tYzgkiTOwsBPZCIS.png",
+      backgroundScale: 5,
+      backgroundUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/bNYEJrzWwQeyYqCA.png",
+      h: 4096,
+      icon: "/effects/effects2/tu/left-default.png",
+      iconHighlight: "/effects/effects2/tu/left-checked.png",
+      iconHighlightUrl:
+        "https://biu-hk.dwstatic.com/sky/20211110/eHOuhgwGfeMkIXmr.png",
+      iconUrl: "https://biu-hk.dwstatic.com/sky/20211110/q0t1Oz0WPxS2o5LZ.png",
+      id: 5,
+      mask: "/effects/effects2/tu/xiu1_mask.png",
+      paramSettingInfo: [
+        {
+          filterIndex: 0,
+          paramName: "4_binary",
+          paramType: "binary",
+        },
+        {
+          filterIndex: 0,
+          paramName: "updateMaterialToken",
+          paramType: "randomNum",
+        },
+      ],
+      path: "/effects/effects2/xiu1_uv.png",
+      pathUrl: "https://biu-hk.dwstatic.com/sky/20211110/NTvQKUuO7DqtbDVk.png",
+      sizeSetting: [
+        {
+          alpha: "/effects/effects2/tu/xiu1_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/zL4YqVPKbqlPT5Fv.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu1_mask.png",
+          name: "S",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu1_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/zL4YqVPKbqlPT5Fv.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu1_mask.png",
+          name: "M",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu1_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/zL4YqVPKbqlPT5Fv.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu1_mask.png",
+          name: "L",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu1_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/zL4YqVPKbqlPT5Fv.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu1_mask.png",
+          name: "XL",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu1_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/zL4YqVPKbqlPT5Fv.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu1_mask.png",
+          name: "2XL",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu1_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/zL4YqVPKbqlPT5Fv.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu1_mask.png",
+          name: "3XL",
+          width: "12",
+        },
+        {
+          alpha: "/effects/effects2/tu/xiu1_alpha.png",
+          alphaUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/zL4YqVPKbqlPT5Fv.png",
+          height: "15",
+          mask: "/effects/effects2/tu/xiu1_mask.png",
+          name: "4XL",
+          width: "12",
+        },
+      ],
+      title: "Right sleeve",
+      type: "image",
+      updateParam: {
+        filterIndex: 0,
+        paramKey: "ModelRotY",
+        value: "90",
+      },
+      w: 4096,
+    },
+    {
+      defValue: "White_mip.jpg",
+      id: 6,
+      materialList: [
+        {
+          hex: "ffffff",
+          name: "White",
+          paramValue: "White_mip.jpg",
+          path: "/effects/effects2/White_mip.jpg",
+          pathUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/t0oWkpkfCVNbJvF5.jpg",
+          smallIcon: "/effects/effects2/small_White_mip.jpg",
+        },
+        {
+          hex: "bfbfc0",
+          name: "Grey",
+          paramValue: "Grey_mip.jpg",
+          path: "/effects/effects2/Grey_mip.jpg",
+          pathUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/z8Y74a6oV40jIrn2.jpg",
+          smallIcon: "/effects/effects2/small_Grey_mip.jpg",
+        },
+        {
+          hex: "c8102e",
+          name: "Red",
+          paramValue: "Red_mip.jpg",
+          path: "/effects/effects2/Red_mip.jpg",
+          pathUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/YUPQ4t4KfJpjLQhN.jpg",
+          smallIcon: "/effects/effects2/small_Red_mip.jpg",
+        },
+        {
+          hex: "202a44",
+          name: "Navy",
+          paramValue: "Navy_mip.jpg",
+          path: "/effects/effects2/Navy_mip.jpg",
+          pathUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/Y4cbH6wE32EvRT6m.jpg",
+          smallIcon: "/effects/effects2/small_Navy_mip.jpg",
+        },
+        {
+          hex: "212721",
+          name: "Black",
+          paramValue: "Black_mip.jpg",
+          path: "/effects/effects2/Black_mip.jpg",
+          pathUrl:
+            "https://biu-hk.dwstatic.com/sky/20211110/xDW7fHCwsxLnQmji.jpg",
+          smallIcon: "/effects/effects2/small_Black_mip.jpg",
+        },
+      ],
+      title: "颜色",
+      type: "colorMaterial",
+      updateParam: [
+        {
+          filterIndex: 0,
+          paramKey: "3_color_material",
+        },
+        {
+          filterIndex: 0,
+          paramKey: "8_color_material",
+        },
+        {
+          filterIndex: 0,
+          paramKey: "6_color_material",
+        },
+        {
+          filterIndex: 0,
+          paramKey: "2_color_material",
+        },
+        {
+          filterIndex: 0,
+          paramKey: "1_color_material",
+        },
+        {
+          filterIndex: 0,
+          paramKey: "7_color_material",
+        },
+        {
+          filterIndex: 0,
+          paramKey: "4_color_material",
+        },
+        {
+          filterIndex: 0,
+          paramKey: "5_color_material",
+        },
+      ],
+    },
+  ];
+</script>
